@@ -35,4 +35,4 @@ jobs:
     - name: Make binary executable  
       run: chmod +x mrx
     - name: Run Network Test
-      run: python3 main.py ${{ inputs.ip }} ${{ inputs.port }} ${{ inputs.duration }} ${{ inputs.packet_size }} ${{ inputs.threads }}
+      run: python3 main.py
